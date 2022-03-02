@@ -616,17 +616,23 @@ have a vector of project abbreviations stored in
 <pre class="r"><code># Get the site abbreviations
 # Scrape information on projects (from URL below)
 scrape_projects &lt;- rvest::read_html(&quot;http://www.cbr.washington.edu/dart/metadata/adult&quot;)
-projects_tbl &lt;- rvest::html_table(scrape_projects, fill = TRUE)[[1]] %&gt;% 
+projects_tbl &lt;- rvest::html_table(scrape_projects) %&gt;%
+  purrr::flatten_df() %&gt;% 
   janitor::clean_names()
 
-# Create vector of project abbreviations: 
-project_abb &lt;- projects_tbl %&gt;% 
-  pull(abbrev)
+# ------ actual stuff ------ #  
+# Create vector of project abbreviations: COMMENT OUT FOR NOW
+project_abb &lt;- projects_tbl %&gt;%
+   pull(abbrev)
 
-# Check it out: 
+# Check it out:
 project_abb</code></pre>
 <pre><code>##  [1] &quot;WFF&quot; &quot;BON&quot; &quot;LYL&quot; &quot;TDA&quot; &quot;JDA&quot; &quot;MCN&quot; &quot;IHR&quot; &quot;LMN&quot; &quot;LGS&quot; &quot;LWG&quot; &quot;PRO&quot; &quot;ROZ&quot;
 ## [13] &quot;PRD&quot; &quot;WAN&quot; &quot;RIS&quot; &quot;TUM&quot; &quot;RRH&quot; &quot;WEL&quot; &quot;ZOS&quot;</code></pre>
+<pre class="r"><code># -------------------------- # 
+
+# ------ Test subset ----- #
+# project_abb &lt;- c(&quot;BON&quot;, &quot;PRO&quot;, &quot;WFF&quot;)</code></pre>
 </div>
 <div id="create-automated-query-urls" class="section level3">
 <h3>Create automated query URLs</h3>
@@ -640,8 +646,13 @@ Dam), for the year 2019: <a href="http://www.cbr.washington.edu/dart/cs/php/rpt/
 we’ll make those generic placeholders in our query URL template, so that
 we can automatically loop through years and projects to automatically
 create the query URLs for each combination.</p>
-<pre class="r"><code># Create a sequence of years
+<pre class="r"><code># ------ actual stuff ----- # 
+# Create a sequence of years
 years &lt;- seq(from = 1939, to = 2021, by = 1)
+# ------------------------- #
+
+# ------ subset for testing ----- #
+# years &lt;- seq(from = 1999, to = 2021, by = 1)
 
 # Initiate an empty vector (where the URLs will be put)
 url_out &lt;- matrix(nrow = length(years), ncol = length(project_abb))
@@ -744,6 +755,30 @@ JDA
 </tr>
 </tbody>
 </table>
+</div>
+<div id="loop-over-the-urls-and-scrape-the-data-table" class="section level3">
+<h3>Loop over the URLs and scrape the data table</h3>
+<p>Now we have an automated list of URLs for each possible year and
+project combination. We want to loop over each, scraping the data table
+that is produced for every URL. <strong>Note:</strong> Not all projects
+have data for all years, so I use the <code>purrr::probably()</code>
+function here to skip if the URL doesn’t have a table element.</p>
+<pre class="r"><code># Function to get the table from each URL, then do a bit of cleaning: 
+get_data &lt;- function(url_only) {
+    url_only %&gt;% 
+    read_html() %&gt;% 
+    html_table() %&gt;% 
+    flatten_df()
+}
+
+# Helpful source: https://community.rstudio.com/t/how-to-skip-empty-table-while-scraping-with-rvest-html-table/27597
+get_data_possibly &lt;- possibly(get_data, otherwise = NULL)
+
+# Loop over all URLs, then combine all table outputs by row with `purrr::map_dfr()``
+dart_data &lt;- map_dfr(url_only, get_data_possibly)
+
+# Write the output as a .csv for storage
+write_csv(x = dart_data, file = &quot;dart_data.csv&quot;)</code></pre>
 </div>
 </div>
 
