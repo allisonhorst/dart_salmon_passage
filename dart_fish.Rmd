@@ -1,0 +1,122 @@
+---
+title: "DART Fish Passage"
+author: "Allison Horst"
+date: '2022-03-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rvest)
+library(janitor)
+library(kableExtra)
+```
+
+## Overview
+
+The purpose of this project is to explore, by project and year, adult fish passage recorded at dams in the Columbia Basin using data from [Columbia River DART (Data Access in Real Time)](http://www.cbr.washington.edu/dart). 
+
+Using a combination of web scraping, data wrangling, analysis and visualization, I explore trends in fish passage using long term time series data for fish counts. 
+
+## 1. Access the data
+
+### Scrape DART project website to get site abbreviations
+
+Since I'll be looping over URLs using site abbreviations, first I use `rvest::read_html()` and `rvest::html_table()` to scrape the page, then access the table. A bit of cleaning with `janitor::clean_names()` and `dplyr::pull()` and I have a vector of project abbreviations stored in `project_abb`.
+
+```{r get_projects}
+# Get the site abbreviations
+# Scrape information on projects (from URL below)
+scrape_projects <- rvest::read_html("http://www.cbr.washington.edu/dart/metadata/adult")
+projects_tbl <- rvest::html_table(scrape_projects) %>%
+  purrr::flatten_df() %>% 
+  janitor::clean_names()
+
+# Create vector of project abbreviations: 
+project_abb <- projects_tbl %>% 
+  pull(abbrev)
+
+# Check it out: 
+project_abb
+```
+
+### Create automated query URLs
+
+Rather that submitting individual queries for each site and year, which would be nothing short of a complete bummer, I'll paste information into a URL template so that I can access information using those URLs. 
+
+Here is an example of a query link that is for site "BON" (Bonneville Dam), for the year 2019: 
+http://www.cbr.washington.edu/dart/cs/php/rpt/adult_daily.php?sc=1&outputFormat=html&year=2019&proj=BON&span=no&startdate=1%2F1&enddate=12%2F31&run=&syear=2019&eyear=2019
+
+Note where the year (2019) and project abbreviation (BON) show up - we'll make those generic placeholders in our query URL template, so that we can automatically loop through years and projects to automatically create the query URLs for each combination.
+
+```{r}
+# Create a sequence of years
+years <- seq(from = 1939, to = 2021, by = 1)
+
+# Initiate an empty vector (where the URLs will be put)
+url_out <- matrix(nrow = length(years), ncol = length(project_abb))
+
+# Loop over the years and project abbreviations to create a query URL for each combination: 
+
+query_urls <- for (i in seq_along(years)) {
+  for (j in seq_along(project_abb)) {
+  url_out[i,j] <- paste0("http://www.cbr.washington.edu/dart/cs/php/rpt/adult_daily.php?sc=1&outputFormat=html&year=", years[i], "&proj=", project_abb[j], "&span=no&startdate=1%2F1&enddate=12%2F31&run=&syear=", years[i], "&eyear=", years[i])
+  }
+}
+```
+
+Then just a bit more cleaning on the output data frame containing the query URLs: 
+```{r}
+# Convert matrix to a data frame
+url_clean <- url_out %>% 
+  as.data.frame() 
+
+# Update column names to project abbreviation
+names(url_clean) <- project_abb
+
+# Add year to output (and convert to data frame)
+url_clean <- data.frame(years, url_clean)
+
+# Reshape to long format
+url_long <- url_clean %>% 
+  tidyr::pivot_longer(cols = 2:ncol(url_clean), 
+                      names_to = "project",
+                      values_to = "query_url")
+```
+
+Which returns a really nice data frame containing the query URL for each year/project combination (first 5 lines shown below): 
+
+```{r, echo = FALSE}
+url_long %>% 
+  head(5) %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+### Loop over the URLs and scrape the data table
+
+Now we have an automated list of URLs for each possible year and project combination. We want to loop over each, scraping the data table that is produced for every URL. **Note:** Not all projects have data for all years, so I use the `purrr::probably()` function here to skip if the URL doesn't have a table element. 
+
+```{r, eval = FALSE}
+# Function to get the table from each URL, then do a bit of cleaning: 
+get_data <- function(query_url) {
+  query_url %>% 
+    read_html() %>% 
+    html_table() %>% 
+    flatten_df() %>% 
+    janitor::row_to_names(1, remove_rows_above = FALSE) %>% 
+    clean_names()
+}
+
+# Helpful source: https://community.rstudio.com/t/how-to-skip-empty-table-while-scraping-with-rvest-html-table/27597
+get_data_possibly <- possibly(get_data, otherwise = NULL)
+
+# Loop over all URLs, then combine all table outputs by row with `purrr::map_dfr()``
+dart_data <- map_dfr(url_long$query_url, ~get_data_possibly(query_url = query_url))
+
+# Write the output as a .csv for storage
+write_csv(x = dart_data, file = "dart_data.csv")
+```
+
+
