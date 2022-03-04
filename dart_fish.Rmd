@@ -1,12 +1,13 @@
 ---
-title: "DART Fish Passage"
+title: "Columbia Basin DART Fish Passage"
 author: "Allison Horst"
 date: '2022-03-02'
+runtime: shiny
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 library(tidyverse)
 library(rvest)
 library(janitor)
@@ -33,17 +34,12 @@ projects_tbl <- rvest::html_table(scrape_projects) %>%
   purrr::flatten_df() %>% 
   janitor::clean_names()
 
-# ------ actual stuff ------ #  
-# Create vector of project abbreviations: COMMENT OUT FOR NOW
+# Create vector of project abbreviations
 project_abb <- projects_tbl %>%
    pull(abbrev)
 
 # Check it out:
 project_abb
-# -------------------------- # 
-
-# ------ Test subset ----- #
-# project_abb <- c("BON", "PRO", "WFF")
 ```
 
 ### Create automated query URLs
@@ -56,13 +52,8 @@ http://www.cbr.washington.edu/dart/cs/php/rpt/adult_daily.php?sc=1&outputFormat=
 Note where the year (2019) and project abbreviation (BON) show up - we'll make those generic placeholders in our query URL template, so that we can automatically loop through years and projects to automatically create the query URLs for each combination.
 
 ```{r}
-# ------ actual stuff ----- # 
 # Create a sequence of years
 years <- seq(from = 1939, to = 2021, by = 1)
-# ------------------------- #
-
-# ------ subset for testing ----- #
-# years <- seq(from = 1999, to = 2021, by = 1)
 
 # Initiate an empty vector (where the URLs will be put)
 url_out <- matrix(nrow = length(years), ncol = length(project_abb))
@@ -111,7 +102,7 @@ url_only <- url_long %>%
 
 ### Loop over the URLs and scrape the data table
 
-Now we have an automated list of URLs for each possible year and project combination. We want to loop over each, scraping the data table that is produced for every URL. **Note:** Not all projects have data for all years, so I use the `purrr::probably()` function here to skip if the URL doesn't have a table element. 
+Now we have an automated list of URLs for each possible year and project combination. We want to loop over each, scraping the data table that is produced for every URL. **Note:** Not all projects have data for all years, so I use the `purrr::possibly()` function here to skip if the URL doesn't have a table element. 
 
 ```{r, eval = FALSE}
 # Function to get the table from each URL, then do a bit of cleaning: 
@@ -122,7 +113,7 @@ get_data <- function(url_only) {
     flatten_df()
 }
 
-# Helpful source: https://community.rstudio.com/t/how-to-skip-empty-table-while-scraping-with-rvest-html-table/27597
+# Possibly to pass over empty URLs
 get_data_possibly <- possibly(get_data, otherwise = NULL)
 
 # Loop over all URLs, then combine all table outputs by row with `purrr::map_dfr()``
@@ -132,5 +123,151 @@ dart_data <- map_dfr(url_only, get_data_possibly)
 write_csv(x = dart_data, file = "dart_data.csv")
 
 ```
+
+### Read in the CSV
+
+Read in the data as `fish_passage` and do some wrangling for easier work & analysis later on: 
+```{r, message = FALSE}
+fish_passage <- read_csv("dart_data.csv") %>% 
+  janitor::row_to_names(row_number = 1) %>% 
+  janitor::clean_names() %>% 
+  filter(!date %in% c("Date", "Total")) %>% # Omit totals / summary rows
+  pivot_longer(cols = chinook:pink, names_to = "species", values_to = "adult_count") %>%  # Get into tidy format
+  mutate(date = lubridate::ymd(date),
+         adult_count = as.numeric(adult_count),
+         temp_c = as.numeric(temp_c)) %>% # Convert date to class Date
+  mutate(day = lubridate::day(date),
+         month = as.factor(lubridate::month(date)),
+         year = as.integer(lubridate::year(date)),
+         week = as.integer(lubridate::week(date)))
+```
+
+### Take a glimpse:
+
+```{r}
+glimpse(fish_passage)
+```
+
+We see the resulting `r ncol(fish_passage)` variables in `fish_passage` are: 
+
+- `project`: the project / location name
+- `date`: date of the fish count
+- `chinook_run`: season, as applicable
+- `temp_c`: temperature (celsius)
+- `species`: fish species
+- `adult_count`: count of adults passing that project on that day
+- `day`, `month`, `year` and `week`: parsed numeric day, month, year and week information
+
+## 2. Initial data exploration
+
+For some initial exploration I'll just checkout steelhead passage at Bonneville Dam. 
+
+```{r}
+bon_steelhead <- fish_passage %>% 
+  filter(species == "steelhead", project == "Bonneville")
+
+bon_steelhead_weekly <- bon_steelhead%>% 
+  group_by(year, week) %>% 
+  summarize(fish_count = sum(adult_count, na.rm = TRUE))
+```
+
+```{r}
+ggplot(data = bon_steelhead_weekly, 
+       aes(x = week, 
+           y = fish_count, 
+           group = year)) +
+  geom_line(aes(color = year), size = 0.5) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(x = "week", y = "Adult steelhead passage (count)")
+```
+
+It looks like there may be changing patterns over time, but the season plot with all years together doesn't make this clear. I'll break this down a bit further to look into differences across decades. 
+
+```{r, fig.height = 6}
+bon_steelhead_decades <- bon_steelhead_weekly %>% 
+  mutate(decade = floor(year / 10) * 10,
+         decade = paste0(decade, "s")) # Add decade
+
+ggplot(data = bon_steelhead_decades, 
+       aes(x = week, 
+           y = fish_count, 
+           group = year)) +
+  geom_line(aes(color = year), size = 0.5, show.legend = FALSE) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(x = "week", y = "Adult steelhead passage (count)") +
+  facet_wrap(~decade)
+```
+
+Generally, it looks like the clear bimodal passage we see in earlier decades becomes murkier (and possibly unimodal) in more recent decades. It also looks like an earlier (spring) peak seen in earlier decades (1930's - 1950's), though minor compared to the fall passage, is nonexistent starting in the 1960s. 
+
+### Annual salmon counts by species and project
+
+Here, I'll visualize three salmon species (Chinook, Sockeye, Steelhead) over time, by project.
+
+```{r, fig.width = 7, fig.height = 20}
+annual_salmon_counts <- fish_passage %>% 
+  group_by(year, project, species) %>% 
+  summarize(total_fish = sum(adult_count, na.rm = TRUE)) %>% 
+  mutate(total_fish_millions = total_fish / 1e6) %>% 
+  filter(species %in% c("chinook", "sockeye", "steelhead"
+  ))
+
+ggplot(data = annual_salmon_counts, aes(x = year, y = total_fish_millions)) +
+  geom_col(aes(fill = species), show.legend = FALSE) +
+  scale_fill_viridis_d() +
+  facet_grid(project ~ species) +
+  theme_minimal() +
+  labs(y = "Total adult passage counts (millions)") +
+  scale_y_continuous(limits = c(0, 1.3), 
+                     breaks = c(0, 0.5, 1), 
+                     expand = c(0,0)) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+```
+
+Some preliminary takeaways: 
+
+- Greatest counts for are observed at The Dalles, McNary, John Day, and Bonneville
+- Across species and project, there seems to be a peak in total annual counts around 2012 - 2013, followed by a decrease across species and project over the past ~ 7 years
+
+## 3. Interactive graphics
+
+It's clear from the preliminary analysis that there are *many* combinations of variables that may be interesting to explore -- trying to produce them all as static graphs wouldn't be very useful (or efficient). Here, I embed some interactive graphics to facilitate user exploration.  
+
+### Interactive visualization of annual counts
+
+Create the interactive widgets: 
+
+```{r}
+selectInput("project", 
+            label = "Select project:",
+            choices = unique(fish_passage$project), 
+            selected = "Bonneville")
+
+selectInput("species", 
+            label = "Select species:", 
+            choices = unique(fish_passage$species),
+            selected = "coho")
+```
+
+Store the annual counts, then create the interactive plot: 
+
+```{r}
+annual_counts <- fish_passage %>% 
+  group_by(year, project, species) %>% 
+  summarize(total_fish = sum(adult_count, na.rm = TRUE))
+
+renderPlot({
+  annual_counts %>% 
+    filter(project == input$project & species == input$species) %>% 
+    ggplot(aes(x = year, y = total_fish)) +
+    geom_col(fill = "cyan4") +
+    theme_minimal()
+})
+```
+
+### Interactive seasonplots (weekly counts)
 
 
